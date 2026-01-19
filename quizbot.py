@@ -20,7 +20,7 @@ TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
 QUIZ_FOLDER = "quizzes"
 PORT = int(os.environ.get('PORT', 5000))
 
-# --- WEB SERVER (Keeps Bot Alive) ---
+# --- WEB SERVER ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -50,15 +50,12 @@ def load_quiz_from_file(filename):
     questions = []
     path = os.path.join(QUIZ_FOLDER, filename)
     if not path.endswith(".csv"): path += ".csv"
-    
     if not os.path.exists(path): return None
-    
     try:
         with open(path, 'r', encoding='utf-8') as f:
             first_line = f.readline()
             f.seek(0)
             delimiter = ';' if ';' in first_line and ',' not in first_line else ','
-            
             reader = csv.reader(f, delimiter=delimiter)
             for row in reader:
                 if not row or all(x.strip() == '' for x in row): continue
@@ -75,7 +72,6 @@ def load_quiz_from_file(filename):
 async def send_next_question(context, user_id):
     user_data = active_quizzes.get(user_id)
     if not user_data: return
-    
     q_list = user_data["questions"]
     index = user_data["q_index"]
 
@@ -99,39 +95,23 @@ async def send_next_question(context, user_id):
         user_data["q_index"] += 1
         await send_next_question(context, user_id)
 
-# --- KEYBOARD MENUS ---
-
+# --- MENUS ---
 async def show_main_menu(update, context):
-    """Shows the persistent keyboard at the bottom"""
+    """Force shows the Persistent Keyboard"""
     keyboard = [["📂 My Quizzes", "❌ Stop Quiz"]]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="👇 **Menu**",
-        reply_markup=markup
-    )
-
-async def set_bot_commands(context):
-    """Sets the Blue Menu Button logic"""
-    await context.bot.set_my_commands([
-        ("list", "Show quizzes"),
-        ("cancel", "Stop quiz"),
-        ("start", "Restart bot")
-    ])
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+    # sending a separate message ensures the keyboard pops up
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="👇 **Open Menu**", reply_markup=markup)
 
 # --- HANDLERS ---
-
 async def start(update, context):
-    await set_bot_commands(context)
-    await show_main_menu(update, context) # Show the big buttons
+    # 1. ALWAYS show the menu first
+    await show_main_menu(update, context)
     
     args = context.args
     text = update.message.text
-    
-    # Check for Deep Link (/start_filename)
     if text.startswith("/start_"):
-        filename = text[7:]
-        args = [filename]
+        args = [text[7:]]
 
     if args:
         quiz_id = args[0]
@@ -143,54 +123,38 @@ async def start(update, context):
         await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**")
         await send_next_question(context, update.effective_user.id)
     else:
-        await update.message.reply_text("👋 **Bot is Online!**\nUpload a CSV to add a quiz.")
+        # VERSION CHECK MESSAGE
+        await update.message.reply_text("✅ **SYSTEM UPDATED v2.0**\n\nThe buttons should now be visible below! 👇")
 
 async def list_quizzes(update, context):
     files = [f for f in os.listdir(QUIZ_FOLDER) if f.endswith('.csv')]
-    
     if not files:
         await update.message.reply_text("📂 No quizzes found.")
         return
 
     await update.message.reply_text("📂 **Your Quizzes:**")
-    
-    # Create a button row for EVERY file
     for f in files:
         clean_name = f.replace('.csv', '')
-        
-        # Buttons: [Play] [Delete]
-        keyboard = [
-            [
-                InlineKeyboardButton("▶️ Play", callback_data=f"play_{clean_name}"),
-                InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{clean_name}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"📄 **{clean_name}**",
-            reply_markup=reply_markup
-        )
+        # VISUAL BUTTONS
+        keyboard = [[InlineKeyboardButton("▶️ Play", callback_data=f"play_{clean_name}"), InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{clean_name}")]]
+        await update.message.reply_text(f"📄 **{clean_name}**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_click(update, context):
-    """Handles the Play and Delete buttons"""
     query = update.callback_query
-    await query.answer() # Stop loading animation
-    
+    await query.answer()
     data = query.data
     
     if data.startswith("del_"):
-        filename = data[4:] # Remove "del_"
+        filename = data[4:]
         path = os.path.join(QUIZ_FOLDER, filename + ".csv")
         if os.path.exists(path):
             os.remove(path)
             await query.edit_message_text(f"🗑️ **Deleted:** {filename}")
         else:
-            await query.edit_message_text(f"❌ File {filename} already deleted.")
+            await query.edit_message_text(f"❌ File missing.")
 
     elif data.startswith("play_"):
-        filename = data[5:] # Remove "play_"
-        # Simulate /start command
+        filename = data[5:]
         questions = load_quiz_from_file(filename)
         if questions:
             active_quizzes[update.effective_user.id] = {"quiz_id": filename, "q_index": 0, "score": 0, "questions": questions}
@@ -210,13 +174,11 @@ async def cancel_quiz(update, context):
 async def handle_document(update, context):
     doc = update.message.document
     if not doc.file_name.endswith('.csv'): return
-
     file = await context.bot.get_file(doc.file_id)
     safe_name = sanitize_filename(doc.file_name)
     save_path = os.path.join(QUIZ_FOLDER, safe_name)
     await file.download_to_drive(save_path)
-    
-    await update.message.reply_text(f"✅ **Saved!**\nGo to '📂 My Quizzes' to play or delete.")
+    await update.message.reply_text("✅ **Saved!**\nCheck '📂 My Quizzes' to play.")
 
 async def handle_poll_answer(update, context):
     poll_data = context.bot_data.get(update.poll_answer.poll_id)
@@ -229,27 +191,21 @@ async def handle_poll_answer(update, context):
         user_data["q_index"] += 1
         await send_next_question(context, user_id)
 
-# --- RUNNER ---
 if __name__ == '__main__':
     threading.Thread(target=run_web_server, daemon=True).start()
+    app = ApplicationBuilder().token(TOKEN).build()
     
-    application = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('list', list_quizzes))
+    app.add_handler(CommandHandler('cancel', cancel_quiz))
     
-    # Commands
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('list', list_quizzes))
-    application.add_handler(CommandHandler('cancel', cancel_quiz))
+    # Matches the text on the buttons
+    app.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
+    app.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
     
-    # Text Triggers (For the persistent keyboard buttons)
-    application.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
-    application.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
-    
-    # Button Handler (For Play/Delete clicks)
-    application.add_handler(CallbackQueryHandler(button_click))
-    
-    # File & Poll Handlers
-    application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
-    application.add_handler(PollAnswerHandler(handle_poll_answer))
+    app.add_handler(CallbackQueryHandler(button_click))
+    app.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
+    app.add_handler(PollAnswerHandler(handle_poll_answer))
     
     print("Bot is running...")
-    application.run_polling()
+    app.run_polling()
