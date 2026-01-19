@@ -4,7 +4,7 @@ import os
 import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, Poll, BotCommand
+from telegram import Update, Poll
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -24,11 +24,9 @@ PORT = int(os.environ.get('PORT', 5000))
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.end_headers()
         self.wfile.write(b"Bot is running!")
     def do_HEAD(self):
         self.send_response(200)
-        self.end_headers()
 
 def run_web_server():
     server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
@@ -54,19 +52,47 @@ def load_quiz_from_file(filename):
     if not path.endswith(".csv"): path += ".csv"
     
     if not os.path.exists(path): return None
+    
     try:
         with open(path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
+            # 1. Read first line to detect separator (; or ,)
+            first_line = f.readline()
+            f.seek(0) # Go back to start
+            
+            delimiter = ';' if ';' in first_line and ',' not in first_line else ','
+            
+            reader = csv.reader(f, delimiter=delimiter)
+            row_num = 0
             for row in reader:
-                if len(row) < 3: continue
+                row_num += 1
+                # Remove empty strings from end of row (Excel artifact)
+                row = [x for x in row if x.strip()]
+                
+                # We need at least: Question, Option1, Option2, Index
+                if len(row) < 4: 
+                    print(f"Skipping Row {row_num}: Not enough columns {row}")
+                    continue
+                
                 try:
                     correct_idx = int(row[-1])
                     options = row[1:-1]
+                    
+                    # Validate Telegram Limits
+                    if len(options) < 2:
+                        print(f"Row {row_num}: Need at least 2 options.")
+                        continue
+                    if len(options) > 10:
+                        print(f"Row {row_num}: Too many options.")
+                        continue
+                        
                     q = {"question": row[0], "options": options, "correct_id": correct_idx}
                     questions.append(q)
-                except ValueError: continue
+                except ValueError:
+                    continue # Header row or bad index
         return questions
-    except Exception: return []
+    except Exception as e:
+        print(f"File Error: {e}")
+        return []
 
 async def send_next_question(context, user_id):
     user_data = active_quizzes.get(user_id)
@@ -76,12 +102,13 @@ async def send_next_question(context, user_id):
     index = user_data["q_index"]
 
     if index >= len(q_list):
-        # Escaping Markdown disabled for safety
-        await context.bot.send_message(user_id, f"🏁 Quiz Completed!\nScore: {user_data['score']}/{len(q_list)}")
+        await context.bot.send_message(user_id, f"🏁 **Quiz Completed!**\nScore: {user_data['score']}/{len(q_list)}")
         del active_quizzes[user_id] 
         return
 
     q = q_list[index]
+    
+    # --- DIAGNOSTIC MODE: REPORT ERRORS TO USER ---
     try:
         message = await context.bot.send_poll(
             chat_id=user_id,
@@ -92,27 +119,28 @@ async def send_next_question(context, user_id):
             is_anonymous=False
         )
         context.bot_data[message.poll.id] = {"user_id": user_id, "correct": q['correct_id']}
-    except Exception:
+        
+    except Exception as e:
+        # If sending fails, TELL THE USER WHY
+        error_msg = str(e)
+        await context.bot.send_message(user_id, f"⚠️ **Error sending Question {index+1}:**\n`{error_msg}`\n\nSkipping to next...", parse_mode='Markdown')
+        
+        # Skip to next question automatically
         user_data["q_index"] += 1
         await send_next_question(context, user_id)
 
 # --- COMMAND HANDLERS ---
-
 async def set_commands(context: ContextTypes.DEFAULT_TYPE):
-    commands = [
-        ("list", "Show available quizzes"),
-        ("cancel", "Stop current quiz"),
-        ("delete", "Delete a quiz file"),
-        ("start", "Restart bot")
-    ]
-    await context.bot.set_my_commands(commands)
+    await context.bot.set_my_commands([
+        ("list", "Show quizzes"), ("cancel", "Stop quiz"), ("delete", "Delete file")
+    ])
 
 async def start(update, context):
     args = context.args
     user_id = update.effective_user.id
     text = update.message.text
     
-    await set_commands(context) # Force menu refresh
+    await set_commands(context) 
 
     if text.startswith("/start_"):
         filename = text[7:] 
@@ -121,41 +149,35 @@ async def start(update, context):
     if args:
         quiz_id = args[0]
         questions = load_quiz_from_file(quiz_id)
+        
         if not questions:
-            await update.message.reply_text("❌ Quiz not found. Please upload CSV again.")
+            await update.message.reply_text("❌ **Error:** Found 0 valid questions in file.\nCheck if your CSV uses commas or if columns are empty.")
             return
             
         active_quizzes[user_id] = {"quiz_id": quiz_id, "q_index": 0, "score": 0, "questions": questions}
-        # Removed Markdown parsing here to prevent the "Byte Offset" error
-        await update.message.reply_text(f"🚀 Starting: {quiz_id}")
+        await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**", parse_mode='Markdown')
         await send_next_question(context, user_id)
     else:
-        await update.message.reply_text("👋 Bot Online!\nUpload a CSV to save a quiz.")
+        await update.message.reply_text("👋 **Bot Online!** Upload a CSV.")
 
 async def list_quizzes(update, context):
     files = [f for f in os.listdir(QUIZ_FOLDER) if f.endswith('.csv')]
     if not files:
         await update.message.reply_text("📂 No quizzes found.")
         return
-        
-    msg = "📂 Available Quizzes:\n\n"
+    msg = "📂 **Available Quizzes:**\n\n"
     for f in files:
         clean_name = f.replace('.csv', '')
-        # We manually construct the command link
         msg += f"• {clean_name} -> /start_{clean_name}\n"
-        
-    await update.message.reply_text(msg) # No markdown, safer
+    await update.message.reply_text(msg)
 
 async def delete_quiz(update, context):
     if update.effective_user.id != ADMIN_ID: return
-    
     if not context.args:
-        await update.message.reply_text("⚠️ Usage: /delete <filename>\nExample: /delete my_quiz")
+        await update.message.reply_text("Usage: /delete <filename>")
         return
-
     filename = context.args[0]
     path = os.path.join(QUIZ_FOLDER, filename + ".csv")
-    
     if os.path.exists(path):
         os.remove(path)
         await update.message.reply_text(f"🗑️ Deleted: {filename}")
@@ -163,12 +185,11 @@ async def delete_quiz(update, context):
         await update.message.reply_text("❌ File not found.")
 
 async def cancel_quiz(update, context):
-    user_id = update.effective_user.id
-    if user_id in active_quizzes:
-        del active_quizzes[user_id]
-        await update.message.reply_text("🛑 Quiz Cancelled.")
+    if update.effective_user.id in active_quizzes:
+        del active_quizzes[update.effective_user.id]
+        await update.message.reply_text("🛑 Cancelled.")
     else:
-        await update.message.reply_text("You are not taking a quiz.")
+        await update.message.reply_text("No active quiz.")
 
 async def handle_document(update, context):
     if update.effective_user.id != ADMIN_ID: return
@@ -178,12 +199,10 @@ async def handle_document(update, context):
     file = await context.bot.get_file(doc.file_id)
     safe_name = sanitize_filename(doc.file_name)
     save_path = os.path.join(QUIZ_FOLDER, safe_name)
-    
     await file.download_to_drive(save_path)
     
     quiz_id = safe_name.replace(".csv", "")
-    # Removed Markdown parsing here to fix the crash
-    await update.message.reply_text(f"✅ Saved!\nFilename: {safe_name}\nStart Link: /start_{quiz_id}")
+    await update.message.reply_text(f"✅ Saved!\nStart: /start_{quiz_id}")
 
 async def handle_poll_answer(update, context):
     poll_data = context.bot_data.get(update.poll_answer.poll_id)
@@ -196,20 +215,15 @@ async def handle_poll_answer(update, context):
         user_data["q_index"] += 1
         await send_next_question(context, user_id)
 
-# --- RUNNER ---
 if __name__ == '__main__':
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    application = ApplicationBuilder().token(TOKEN).build()
-    
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('list', list_quizzes))
-    application.add_handler(CommandHandler('cancel', cancel_quiz))
-    application.add_handler(CommandHandler('delete', delete_quiz)) # New Command
-    
-    application.add_handler(MessageHandler(filters.Regex(r'^/start_'), start))
-    application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
-    application.add_handler(PollAnswerHandler(handle_poll_answer))
-    
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('list', list_quizzes))
+    app.add_handler(CommandHandler('cancel', cancel_quiz))
+    app.add_handler(CommandHandler('delete', delete_quiz))
+    app.add_handler(MessageHandler(filters.Regex(r'^/start_'), start))
+    app.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
+    app.add_handler(PollAnswerHandler(handle_poll_answer))
     print("Bot is running...")
-    application.run_polling()
+    app.run_polling()
