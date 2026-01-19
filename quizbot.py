@@ -1,7 +1,6 @@
 import logging
 import csv
 import os
-import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,14 +17,18 @@ from telegram.ext import (
 TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
 ADMIN_ID = 947768900
 QUIZ_FOLDER = "quizzes"
-PORT = int(os.environ.get('PORT', 5000)) # Render gives us a port automatically
+PORT = int(os.environ.get('PORT', 5000))
 
-# --- DUMMY WEB SERVER (KEEPS BOT ALIVE) ---
+# --- FIXED WEB SERVER (Handles GET and HEAD) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"I am alive!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
 def run_web_server():
     server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
@@ -140,16 +143,12 @@ async def handle_poll_answer(update, context):
 
 # --- RUNNER ---
 if __name__ == '__main__':
-    # Start Web Server in Background Thread
     threading.Thread(target=run_web_server, daemon=True).start()
-    
-    # Start Bot
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('list', list_quizzes))
     application.add_handler(MessageHandler(filters.Regex(r'^/start_'), start))
     application.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
     application.add_handler(PollAnswerHandler(handle_poll_answer))
-    
     print("Bot is running...")
     application.run_polling()
