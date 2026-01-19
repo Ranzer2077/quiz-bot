@@ -17,6 +17,7 @@ from telegram.ext import (
 
 # --- CONFIGURATION ---
 TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
+ADMIN_ID = 947768900  # <--- ONLY THIS ID CAN DELETE/UPLOAD
 QUIZ_FOLDER = "quizzes"
 PORT = int(os.environ.get('PORT', 5000))
 
@@ -97,15 +98,12 @@ async def send_next_question(context, user_id):
 
 # --- MENUS ---
 async def show_main_menu(update, context):
-    """Force shows the Persistent Keyboard"""
     keyboard = [["📂 My Quizzes", "❌ Stop Quiz"]]
     markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-    # sending a separate message ensures the keyboard pops up
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="👇 **Open Menu**", reply_markup=markup)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="👇 **Menu**", reply_markup=markup)
 
 # --- HANDLERS ---
 async def start(update, context):
-    # 1. ALWAYS show the menu first
     await show_main_menu(update, context)
     
     args = context.args
@@ -123,8 +121,7 @@ async def start(update, context):
         await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**")
         await send_next_question(context, update.effective_user.id)
     else:
-        # VERSION CHECK MESSAGE
-        await update.message.reply_text("✅ **SYSTEM UPDATED v2.0**\n\nThe buttons should now be visible below! 👇")
+        await update.message.reply_text("👋 **Bot is Online!**\n\nSelect an option below.")
 
 async def list_quizzes(update, context):
     files = [f for f in os.listdir(QUIZ_FOLDER) if f.endswith('.csv')]
@@ -141,10 +138,18 @@ async def list_quizzes(update, context):
 
 async def button_click(update, context):
     query = update.callback_query
-    await query.answer()
     data = query.data
+    user_id = update.effective_user.id
     
+    # --- SECURITY CHECK FOR DELETE ---
     if data.startswith("del_"):
+        if user_id != ADMIN_ID:
+            # Show a pop-up alert only to the user who clicked
+            await query.answer("⛔ Security: Only the Admin can delete quizzes!", show_alert=True)
+            return
+        
+        # If Admin, proceed to delete
+        await query.answer()
         filename = data[4:]
         path = os.path.join(QUIZ_FOLDER, filename + ".csv")
         if os.path.exists(path):
@@ -154,12 +159,13 @@ async def button_click(update, context):
             await query.edit_message_text(f"❌ File missing.")
 
     elif data.startswith("play_"):
+        await query.answer()
         filename = data[5:]
         questions = load_quiz_from_file(filename)
         if questions:
-            active_quizzes[update.effective_user.id] = {"quiz_id": filename, "q_index": 0, "score": 0, "questions": questions}
+            active_quizzes[user_id] = {"quiz_id": filename, "q_index": 0, "score": 0, "questions": questions}
             await query.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**")
-            await send_next_question(context, update.effective_user.id)
+            await send_next_question(context, user_id)
         else:
             await query.message.reply_text("❌ Error loading quiz.")
 
@@ -172,6 +178,11 @@ async def cancel_quiz(update, context):
         await update.message.reply_text("No active quiz.")
 
 async def handle_document(update, context):
+    # --- SECURITY CHECK FOR UPLOAD ---
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ **Admin Access Required** to upload files.")
+        return
+
     doc = update.message.document
     if not doc.file_name.endswith('.csv'): return
     file = await context.bot.get_file(doc.file_id)
@@ -198,11 +209,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('list', list_quizzes))
     app.add_handler(CommandHandler('cancel', cancel_quiz))
-    
-    # Matches the text on the buttons
     app.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
     app.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
-    
     app.add_handler(CallbackQueryHandler(button_click))
     app.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
