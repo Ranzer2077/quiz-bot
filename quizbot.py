@@ -3,6 +3,7 @@ import csv
 import os
 import re
 import threading
+import random
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -62,11 +63,33 @@ def load_quiz_from_file(filename):
                 if not row or all(x.strip() == '' for x in row): continue
                 if len(row) < 4: continue
                 try:
-                    correct_idx = int(row[-1])
-                    options = row[1:-1]
-                    if len(options) < 2: continue
-                    questions.append({"question": row[0], "options": options, "correct_id": correct_idx})
+                    # Parse the correct answer text before we shuffle!
+                    # Logic: We need to track the *text* of the answer, not the index, 
+                    # because the index changes when we shuffle options.
+                    original_correct_idx = int(row[-1])
+                    original_options = row[1:-1]
+                    
+                    if len(original_options) < 2: continue
+                    
+                    correct_text = original_options[original_correct_idx]
+                    
+                    # 1. Shuffle Options
+                    # Create a copy of options and shuffle them
+                    final_options = original_options[:]
+                    random.shuffle(final_options)
+                    
+                    # Find the new index of the correct answer
+                    new_correct_idx = final_options.index(correct_text)
+                    
+                    questions.append({
+                        "question": row[0], 
+                        "options": final_options, 
+                        "correct_id": new_correct_idx
+                    })
                 except ValueError: continue 
+        
+        # 2. Shuffle the Question Order
+        random.shuffle(questions)
         return questions
     except Exception: return []
 
@@ -217,3 +240,4 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     app.run_polling()
+
