@@ -3,7 +3,7 @@ import csv
 import os
 import re
 import threading
-import random
+import random  # <--- Essential for shuffling
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -18,11 +18,11 @@ from telegram.ext import (
 
 # --- CONFIGURATION ---
 TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
-ADMIN_ID = 947768900  # <--- ONLY THIS ID CAN DELETE/UPLOAD
+ADMIN_ID = 947768900
 QUIZ_FOLDER = "quizzes"
 PORT = int(os.environ.get('PORT', 5000))
 
-# --- WEB SERVER ---
+# --- WEB SERVER (Keeps Bot Alive) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -63,22 +63,20 @@ def load_quiz_from_file(filename):
                 if not row or all(x.strip() == '' for x in row): continue
                 if len(row) < 4: continue
                 try:
-                    # Parse the correct answer text before we shuffle!
-                    # Logic: We need to track the *text* of the answer, not the index, 
-                    # because the index changes when we shuffle options.
+                    # Logic: We must shuffle options AND track where the correct answer went
                     original_correct_idx = int(row[-1])
                     original_options = row[1:-1]
                     
                     if len(original_options) < 2: continue
                     
+                    # 1. Identify the text of the correct answer
                     correct_text = original_options[original_correct_idx]
                     
-                    # 1. Shuffle Options
-                    # Create a copy of options and shuffle them
+                    # 2. Shuffle the options list
                     final_options = original_options[:]
                     random.shuffle(final_options)
                     
-                    # Find the new index of the correct answer
+                    # 3. Find the new index of the correct answer
                     new_correct_idx = final_options.index(correct_text)
                     
                     questions.append({
@@ -88,7 +86,7 @@ def load_quiz_from_file(filename):
                     })
                 except ValueError: continue 
         
-        # 2. Shuffle the Question Order
+        # 4. Shuffle the order of questions
         random.shuffle(questions)
         return questions
     except Exception: return []
@@ -141,7 +139,7 @@ async def start(update, context):
             await update.message.reply_text("❌ Quiz not found.")
             return
         active_quizzes[update.effective_user.id] = {"quiz_id": quiz_id, "q_index": 0, "score": 0, "questions": questions}
-        await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**")
+        await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions (Randomized)...**")
         await send_next_question(context, update.effective_user.id)
     else:
         await update.message.reply_text("👋 **Bot is Online!**\n\nSelect an option below.")
@@ -155,7 +153,6 @@ async def list_quizzes(update, context):
     await update.message.reply_text("📂 **Your Quizzes:**")
     for f in files:
         clean_name = f.replace('.csv', '')
-        # VISUAL BUTTONS
         keyboard = [[InlineKeyboardButton("▶️ Play", callback_data=f"play_{clean_name}"), InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{clean_name}")]]
         await update.message.reply_text(f"📄 **{clean_name}**", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -164,14 +161,11 @@ async def button_click(update, context):
     data = query.data
     user_id = update.effective_user.id
     
-    # --- SECURITY CHECK FOR DELETE ---
     if data.startswith("del_"):
         if user_id != ADMIN_ID:
-            # Show a pop-up alert only to the user who clicked
             await query.answer("⛔ Security: Only the Admin can delete quizzes!", show_alert=True)
             return
         
-        # If Admin, proceed to delete
         await query.answer()
         filename = data[4:]
         path = os.path.join(QUIZ_FOLDER, filename + ".csv")
@@ -187,7 +181,7 @@ async def button_click(update, context):
         questions = load_quiz_from_file(filename)
         if questions:
             active_quizzes[user_id] = {"quiz_id": filename, "q_index": 0, "score": 0, "questions": questions}
-            await query.message.reply_text(f"🚀 **Starting {len(questions)} Questions...**")
+            await query.message.reply_text(f"🚀 **Starting {len(questions)} Questions (Randomized)...**")
             await send_next_question(context, user_id)
         else:
             await query.message.reply_text("❌ Error loading quiz.")
@@ -201,7 +195,6 @@ async def cancel_quiz(update, context):
         await update.message.reply_text("No active quiz.")
 
 async def handle_document(update, context):
-    # --- SECURITY CHECK FOR UPLOAD ---
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ **Admin Access Required** to upload files.")
         return
@@ -240,4 +233,3 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     app.run_polling()
-
