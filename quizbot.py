@@ -3,12 +3,11 @@ import csv
 import os
 import re
 import threading
-import random  # <--- Essential for shuffling
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import random
+from flask import Flask
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -17,23 +16,31 @@ from telegram.ext import (
 )
 
 # --- CONFIGURATION ---
-TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
-ADMIN_ID = 947768900
-QUIZ_FOLDER = "quizzes"
+# AUTOMATICALLY GET TOKEN AND PORT
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
 PORT = int(os.environ.get('PORT', 10000))
+QUIZ_FOLDER = "quizzes"
+ADMIN_ID = 947768900
 
-# --- WEB SERVER (Keeps Bot Alive) ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.wfile.write(b"Bot is running!")
-    def do_HEAD(self):
-        self.send_response(200)
+# --- SILENCE THE NOISY LOGS ---
+# This stops the endless "POST /getUpdates" spam in your logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-def run_web_server():
-    server = ThreadingHTTPServer(('0.0.0.0', PORT), SimpleHandler)
-    print(f"🌍 Web server running on port {PORT}")
-    server.serve_forever()
+# --- FLASK SERVER (The Robust Fix) ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    # '0.0.0.0' is CRITICAL for Render to see the app
+    app.run(host='0.0.0.0', port=PORT)
+
+def keep_alive():
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
 # --- BOT SETUP ---
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +49,7 @@ if not os.path.exists(QUIZ_FOLDER):
 
 active_quizzes = {}
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS (UNCHANGED) ---
 def sanitize_filename(filename):
     name, ext = os.path.splitext(filename)
     clean_name = re.sub(r'[^a-zA-Z0-9]', '_', name)
@@ -64,30 +71,19 @@ def load_quiz_from_file(filename):
                 if not row or all(x.strip() == '' for x in row): continue
                 if len(row) < 4: continue
                 try:
-                    # Logic: We must shuffle options AND track where the correct answer went
                     original_correct_idx = int(row[-1])
                     original_options = row[1:-1]
-                    
                     if len(original_options) < 2: continue
-                    
-                    # 1. Identify the text of the correct answer
                     correct_text = original_options[original_correct_idx]
-                    
-                    # 2. Shuffle the options list
                     final_options = original_options[:]
                     random.shuffle(final_options)
-                    
-                    # 3. Find the new index of the correct answer
                     new_correct_idx = final_options.index(correct_text)
-                    
                     questions.append({
                         "question": row[0], 
                         "options": final_options, 
                         "correct_id": new_correct_idx
                     })
                 except ValueError: continue 
-        
-        # 4. Shuffle the order of questions
         random.shuffle(questions)
         return questions
     except Exception: return []
@@ -118,21 +114,17 @@ async def send_next_question(context, user_id):
         user_data["q_index"] += 1
         await send_next_question(context, user_id)
 
-# --- MENUS ---
 async def show_main_menu(update, context):
     keyboard = [["📂 My Quizzes", "❌ Stop Quiz"]]
     markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
     await context.bot.send_message(chat_id=update.effective_chat.id, text="👇 **Menu**", reply_markup=markup)
 
-# --- HANDLERS ---
 async def start(update, context):
     await show_main_menu(update, context)
-    
     args = context.args
     text = update.message.text
     if text.startswith("/start_"):
         args = [text[7:]]
-
     if args:
         quiz_id = args[0]
         questions = load_quiz_from_file(quiz_id)
@@ -143,14 +135,13 @@ async def start(update, context):
         await update.message.reply_text(f"🚀 **Starting {len(questions)} Questions (Randomized)...**")
         await send_next_question(context, update.effective_user.id)
     else:
-        await update.message.reply_text("👋 **Bot is Online!**\n\nSelect an option below.")
+        await update.message.reply_text("👋 **Bot is Online!**\nSelect an option below.")
 
 async def list_quizzes(update, context):
     files = [f for f in os.listdir(QUIZ_FOLDER) if f.endswith('.csv')]
     if not files:
         await update.message.reply_text("📂 No quizzes found.")
         return
-
     await update.message.reply_text("📂 **Your Quizzes:**")
     for f in files:
         clean_name = f.replace('.csv', '')
@@ -161,12 +152,10 @@ async def button_click(update, context):
     query = update.callback_query
     data = query.data
     user_id = update.effective_user.id
-    
     if data.startswith("del_"):
         if user_id != ADMIN_ID:
             await query.answer("⛔ Security: Only the Admin can delete quizzes!", show_alert=True)
             return
-        
         await query.answer()
         filename = data[4:]
         path = os.path.join(QUIZ_FOLDER, filename + ".csv")
@@ -175,7 +164,6 @@ async def button_click(update, context):
             await query.edit_message_text(f"🗑️ **Deleted:** {filename}")
         else:
             await query.edit_message_text(f"❌ File missing.")
-
     elif data.startswith("play_"):
         await query.answer()
         filename = data[5:]
@@ -199,7 +187,6 @@ async def handle_document(update, context):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ **Admin Access Required** to upload files.")
         return
-
     doc = update.message.document
     if not doc.file_name.endswith('.csv'): return
     file = await context.bot.get_file(doc.file_id)
@@ -220,20 +207,19 @@ async def handle_poll_answer(update, context):
         await send_next_question(context, user_id)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_web_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Start the Flask Keep-Alive Server
+    keep_alive()
     
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('list', list_quizzes))
-    app.add_handler(CommandHandler('cancel', cancel_quiz))
-    app.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
-    app.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
-    app.add_handler(CallbackQueryHandler(button_click))
-    app.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
-    app.add_handler(PollAnswerHandler(handle_poll_answer))
+    # Start the Telegram Bot
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler('start', start))
+    app_bot.add_handler(CommandHandler('list', list_quizzes))
+    app_bot.add_handler(CommandHandler('cancel', cancel_quiz))
+    app_bot.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
+    app_bot.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
+    app_bot.add_handler(CallbackQueryHandler(button_click))
+    app_bot.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
+    app_bot.add_handler(PollAnswerHandler(handle_poll_answer))
     
-    print("Bot is running...")
-    app.run_polling()
-
-
-
+    print("🤖 Bot is running...")
+    app_bot.run_polling()
