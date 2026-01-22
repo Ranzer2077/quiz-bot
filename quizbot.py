@@ -4,7 +4,7 @@ import os
 import re
 import threading
 import random  # <--- Essential for shuffling
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -31,7 +31,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
 
 def run_web_server():
-    server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
+    server = ThreadingHTTPServer(('0.0.0.0', PORT), SimpleHandler)
     print(f"🌍 Web server running on port {PORT}")
     server.serve_forever()
 
@@ -234,5 +234,6 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     app.run_polling()
+
 
 
