@@ -20,7 +20,7 @@ from telegram.ext import (
 TOKEN = "7880111023:AAHtsxHxQjUDL_j3jGMi-ph-RW0CI6rv7Ho"
 ADMIN_ID = 947768900
 QUIZ_FOLDER = "quizzes"
-PORT = int(os.environ.get('PORT', 5000))
+PORT = int(os.environ.get('PORT', 10000))
 
 # --- WEB SERVER (Keeps Bot Alive) ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -31,7 +31,8 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
 
 def run_web_server():
-    server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
+  server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
+    print(f"🌍 Web server running on port {PORT}") 
     server.serve_forever()
 
 # --- BOT SETUP ---
@@ -233,3 +234,4 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     app.run_polling()
+
