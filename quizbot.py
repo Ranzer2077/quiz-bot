@@ -31,8 +31,8 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
 
 def run_web_server():
-  server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
-    print(f"🌍 Web server running on port {PORT}") 
+    server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
+    print(f"🌍 Web server running on port {PORT}")
     server.serve_forever()
 
 # --- BOT SETUP ---
@@ -234,4 +234,5 @@ if __name__ == '__main__':
     
     print("Bot is running...")
     app.run_polling()
+
 
