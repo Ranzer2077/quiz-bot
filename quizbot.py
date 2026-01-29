@@ -4,8 +4,8 @@ import os
 import re
 import threading
 import random
-import requests  # New library to read from GitHub
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
+from flask import Flask # <--- Switch to Flask
 from telegram import Update, Poll, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,22 +23,20 @@ ADMIN_ID = 947768900
 QUIZ_FOLDER = "quizzes"
 PORT = int(os.environ.get('PORT', 5000))
 
-# REPLACE THIS WITH YOUR GITHUB RAW URL BASE
-# Example: https://raw.githubusercontent.com/YourUsername/my-quiz-bot/main/
-# For now, we will try to read local files first (which Render pulls from GitHub)
-GITHUB_MODE = True 
+# --- FLASK SERVER (Stronger Keep-Alive) ---
+app = Flask(__name__)
 
-# --- WEB SERVER ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.wfile.write(b"Bot is running!")
-    def do_HEAD(self):
-        self.send_response(200)
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
 
 def run_web_server():
-    server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
-    server.serve_forever()
+    # Run Flask on the port Render assigns
+    app.run(host='0.0.0.0', port=PORT)
 
 # --- BOT SETUP ---
 logging.basicConfig(level=logging.INFO)
@@ -55,14 +53,9 @@ def sanitize_filename(filename):
     return f"{clean_name}{ext}"
 
 def load_quiz(filename):
-    """Loads quiz either from local folder or GitHub repo clone"""
     questions = []
-    
-    # Check 1: Is it a file we just uploaded to the bot?
     local_path = os.path.join(QUIZ_FOLDER, filename)
     if not local_path.endswith(".csv"): local_path += ".csv"
-    
-    # Check 2: Is it a file sitting in the root folder (from GitHub)?
     root_path = filename
     if not root_path.endswith(".csv"): root_path += ".csv"
 
@@ -87,10 +80,8 @@ def load_quiz(filename):
                     original_correct_idx = int(row[-1])
                     original_options = row[1:-1]
                     if len(original_options) < 2: continue
-                    
                     correct_text = original_options[original_correct_idx]
                     
-                    # Shuffle Options logic
                     final_options = original_options[:]
                     random.shuffle(final_options)
                     new_correct_idx = final_options.index(correct_text)
@@ -99,11 +90,10 @@ def load_quiz(filename):
                         "question": row[0], 
                         "options": final_options, 
                         "correct_id": new_correct_idx,
-                        "original_options": original_options, # Save specifically for retrying logic
-                        "correct_text": correct_text          # Save text for retrying logic
+                        "original_options": original_options, 
+                        "correct_text": correct_text
                     })
                 except ValueError: continue 
-        
         random.shuffle(questions)
         return questions
     except Exception: return []
@@ -161,13 +151,8 @@ async def start(update, context):
         await update.message.reply_text("👋 **Bot is Online!**\nSelect a quiz below.")
 
 async def list_quizzes(update, context):
-    # 1. Look in uploaded folder
     files = [f for f in os.listdir(QUIZ_FOLDER) if f.endswith('.csv')]
-    
-    # 2. Look in MAIN FOLDER (GitHub Files)
     root_files = [f for f in os.listdir('.') if f.endswith('.csv')]
-    
-    # Combine list
     all_files = list(set(files + root_files))
 
     if not all_files:
@@ -178,7 +163,6 @@ async def list_quizzes(update, context):
     for f in all_files:
         clean_name = f.replace('.csv', '')
         keyboard = [[InlineKeyboardButton("▶️ Play", callback_data=f"play_{clean_name}")]]
-        # Only show delete button for Admin and only for local files (can't delete GitHub files from chat)
         if update.effective_user.id == ADMIN_ID and f in files:
             keyboard[0].append(InlineKeyboardButton("🗑️ Delete", callback_data=f"del_{clean_name}"))
             
@@ -243,52 +227,43 @@ async def handle_poll_answer(update, context):
         correct_option = poll_data["correct"]
         
         if chosen_option == correct_option:
-            # CORRECT ANSWER
             user_data["score"] += 1
             user_data["q_index"] += 1
         else:
-            # WRONG ANSWER -> REPEAT LOGIC
-            # 1. Get the current question object
             current_q = user_data["questions"][user_data["q_index"]]
-            
-            # 2. Reshuffle options again for the next time it appears
-            # We use the saved 'original_options' to ensure we have clean data
             retry_options = current_q["original_options"][:]
             random.shuffle(retry_options)
             new_correct_id = retry_options.index(current_q["correct_text"])
             
-            # 3. Create a new question object
             retry_q = {
-                "question": current_q["question"] + " (Retry 🔄)", # Mark it so they know
+                "question": current_q["question"] + " (Retry 🔄)",
                 "options": retry_options,
                 "correct_id": new_correct_id,
                 "original_options": current_q["original_options"],
                 "correct_text": current_q["correct_text"]
             }
-            
-            # 4. Insert it 3 spots later in the queue (or at the end if fewer than 3 left)
             insert_pos = min(len(user_data["questions"]), user_data["q_index"] + 4)
             user_data["questions"].insert(insert_pos, retry_q)
-            
-            # 5. Send a small notification
             await context.bot.send_message(user_id, "❌ **Wrong!** I'll ask this again in a few turns.")
-            
             user_data["q_index"] += 1
 
         await send_next_question(context, user_id)
 
 if __name__ == '__main__':
+    # START FLASK IN A SEPARATE THREAD
     threading.Thread(target=run_web_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).build()
     
-    app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('list', list_quizzes))
-    app.add_handler(CommandHandler('cancel', cancel_quiz))
-    app.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
-    app.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
-    app.add_handler(CallbackQueryHandler(button_click))
-    app.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
-    app.add_handler(PollAnswerHandler(handle_poll_answer))
+    # START BOT
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    
+    app_bot.add_handler(CommandHandler('start', start))
+    app_bot.add_handler(CommandHandler('list', list_quizzes))
+    app_bot.add_handler(CommandHandler('cancel', cancel_quiz))
+    app_bot.add_handler(MessageHandler(filters.Regex(r'📂 My Quizzes'), list_quizzes))
+    app_bot.add_handler(MessageHandler(filters.Regex(r'❌ Stop Quiz'), cancel_quiz))
+    app_bot.add_handler(CallbackQueryHandler(button_click))
+    app_bot.add_handler(MessageHandler(filters.Document.FileExtension("csv"), handle_document))
+    app_bot.add_handler(PollAnswerHandler(handle_poll_answer))
     
     print("Bot is running...")
-    app.run_polling()
+    app_bot.run_polling()
